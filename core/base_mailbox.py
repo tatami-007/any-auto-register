@@ -11,6 +11,25 @@ from typing import Optional, Any, Callable
 from .proxy_utils import build_requests_proxy_config
 
 
+VERIFICATION_KEYWORDS = (
+    "openai",
+    "chatgpt",
+    "codex",
+    "verify",
+    "verification",
+    "verification code",
+    "security code",
+    "one-time code",
+    "temporary code",
+    "otp",
+    "验证码",
+    "校验码",
+    "验证代码",
+    "临时验证码",
+    "临时代码",
+)
+
+
 @dataclass
 class MailboxAccount:
     email: str
@@ -111,6 +130,139 @@ class BaseMailbox(ABC):
                 # 兼容逻辑：若 pattern 中有捕获组则取 group(1)，否则取 group(0)
                 return m.group(1) if m.groups() else m.group(0)
         return None
+
+    def _strip_html_to_text(self, content: str) -> str:
+        import html
+        import re
+
+        text = str(content or "")
+        if not text:
+            return ""
+        text = html.unescape(text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def _extract_verification_code_scored(
+        self, subject: str, text: str, html_content: str
+    ) -> tuple[str, str]:
+        import re
+
+        raw_content = "\n".join(
+            part
+            for part in (
+                str(subject or ""),
+                str(text or ""),
+                self._strip_html_to_text(html_content),
+            )
+            if part
+        ).strip()
+        if not raw_content:
+            return "", ""
+
+        normalized = self._strip_html_to_text(raw_content)
+        subject_text = str(subject or "").strip()
+        subject_lower = subject_text.lower()
+
+        candidates: list[tuple[str, int, str]] = []
+
+        def _score_candidate(code: str, score: int, source: str) -> None:
+            if not code:
+                return
+            normalized_code = (
+                code.upper() if re.search(r"[A-Za-z]", code or "") else code
+            )
+            candidates.append((normalized_code, score, source))
+
+        def is_valid_code(value: str) -> bool:
+            if not value:
+                return False
+            if re.fullmatch(r"\d{4,8}", value):
+                return True
+            return bool(
+                re.fullmatch(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{4,8}", value)
+            )
+
+        subject_has_keyword = any(
+            keyword in subject_lower for keyword in VERIFICATION_KEYWORDS
+        )
+
+        for match in re.finditer(r"\b([A-Za-z0-9]{4,8})\b", subject_text):
+            code = match.group(1).strip()
+            if not is_valid_code(code):
+                continue
+            score = 360 + (120 if subject_has_keyword else 0) - len(code)
+            _score_candidate(code, score, "主题命中")
+
+        lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+        for idx, line in enumerate(lines):
+            prev_line = lines[idx - 1] if idx > 0 else ""
+            next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+            context = f"{prev_line} {line} {next_line}".lower()
+            has_keyword = any(
+                keyword in context for keyword in VERIFICATION_KEYWORDS
+            )
+            for match in re.finditer(r"\b([A-Za-z0-9]{4,8})\b", line):
+                code = match.group(1).strip()
+                if not is_valid_code(code):
+                    continue
+                if line == code:
+                    source = (
+                        "正文独立数字行命中"
+                        if code.isdigit()
+                        else "正文独立字母数字行命中"
+                    )
+                    base_score = 260
+                else:
+                    source = "正文数字命中" if code.isdigit() else "正文混合码命中"
+                    base_score = 180
+                score = base_score + (180 if has_keyword else 0) - len(code)
+                _score_candidate(code, score, source)
+
+        keyword_patterns = [
+            re.compile(
+                r"(验证码|校验码|验证代码|代码|临时验证码|临时代码|verification code|verification codes|security code|security codes|one-time code|temporary code|otp|code)(?:[^A-Za-z0-9]{0,20})([A-Za-z0-9]{4,8})",
+                re.I,
+            ),
+            re.compile(
+                r"([A-Za-z0-9]{4,8})(?:[^A-Za-z0-9]{0,20})(验证码|校验码|验证代码|代码|临时验证码|临时代码|verification code|verification codes|security code|security codes|one-time code|temporary code|otp|code)",
+                re.I,
+            ),
+        ]
+        for pattern in keyword_patterns:
+            for match in pattern.finditer(normalized):
+                if len(match.groups()) > 1:
+                    code = match.group(2).strip()
+                    if not is_valid_code(code):
+                        code = match.group(1).strip()
+                else:
+                    code = match.group(1).strip()
+                if not is_valid_code(code):
+                    continue
+                base_score = 320 if code.isdigit() else 340
+                score = base_score - len(code)
+                _score_candidate(code, score, "关键词近邻命中")
+
+        for match in re.finditer(r"\b([A-Za-z0-9]{4,8})\b", normalized):
+            code = match.group(1).strip()
+            if not is_valid_code(code):
+                continue
+            start = match.start()
+            context = normalized[
+                max(0, start - 60) : min(len(normalized), start + len(code) + 60)
+            ].lower()
+            has_keyword = any(
+                keyword in context for keyword in VERIFICATION_KEYWORDS
+            )
+            base_score = 120 if code.isdigit() else 100
+            score = base_score + (170 if has_keyword else 0) - len(code)
+            source = "上下文命中" if has_keyword else "兜底命中"
+            _score_candidate(code, score, source)
+
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        if not candidates:
+            return "", ""
+        return candidates[0][0], candidates[0][2]
 
     def _decode_raw_content(self, raw: str) -> str:
         """解析邮件原始文本 (借鉴自 Fugle)，处理 Quoted-Printable 和 HTML 实体"""
@@ -3298,6 +3450,44 @@ class OutlookMailbox(BaseMailbox):
         combined = (subject + " " + " ".join(body_chunks)).strip()
         return self._decode_raw_content(combined)
 
+    def _extract_message_parts(self, message) -> tuple[str, str, str]:
+        subject = self._decode_header_value(message.get("Subject", ""))
+        text_chunks: list[str] = []
+        html_chunks: list[str] = []
+        if message.is_multipart():
+            for part in message.walk():
+                if part.get_content_maintype() == "multipart":
+                    continue
+                content_type = part.get_content_type()
+                if content_type not in ("text/plain", "text/html"):
+                    continue
+                payload = part.get_payload(decode=True)
+                if payload is None:
+                    continue
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    decoded = payload.decode(charset, errors="ignore")
+                except Exception:
+                    decoded = payload.decode("utf-8", errors="ignore")
+                if content_type == "text/plain":
+                    text_chunks.append(decoded)
+                else:
+                    html_chunks.append(decoded)
+        else:
+            payload = message.get_payload(decode=True)
+            if payload is None:
+                payload = message.get_payload()
+            if isinstance(payload, bytes):
+                try:
+                    decoded = payload.decode("utf-8", errors="ignore")
+                except Exception:
+                    decoded = payload.decode("latin1", errors="ignore")
+            else:
+                decoded = str(payload or "")
+            text_chunks.append(decoded)
+
+        return subject, " ".join(text_chunks).strip(), " ".join(html_chunks).strip()
+
     def get_current_ids(self, account: MailboxAccount) -> set:
         imap_conn = None
         try:
@@ -3368,10 +3558,20 @@ class OutlookMailbox(BaseMailbox):
                     if not raw:
                         continue
                     msg = message_from_bytes(raw, policy=email_default_policy)
-                    text = self._extract_message_text(msg)
-                    if keyword_lower and keyword_lower not in text.lower():
+                    subject, text_part, html_part = self._extract_message_parts(msg)
+                    combined = self._decode_raw_content(
+                        " ".join([subject, text_part, html_part]).strip()
+                    )
+                    if keyword_lower and keyword_lower not in combined.lower():
                         continue
-                    code = self._safe_extract(text, code_pattern)
+                    code, source = self._extract_verification_code_scored(
+                        subject, text_part, html_part
+                    )
+                    if code and code not in exclude_codes:
+                        if source:
+                            self._log(f"[Outlook] 命中: {source} code={code}")
+                        return code
+                    code = self._safe_extract(combined, code_pattern)
                     if code:
                         if code in exclude_codes:
                             continue
