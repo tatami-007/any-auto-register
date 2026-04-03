@@ -37,6 +37,21 @@ class SentinelTokenGenerator:
 
     @staticmethod
     def _fnv1a_32(text):
+        """
+        FNV-1a 32位哈希算法（从 SDK JS 逆向还原）
+
+        逆向来源：SDK 中的匿名函数，特征码：
+          e = 2166136261  (FNV offset basis)
+          e ^= t.charCodeAt(r)
+          e = Math.imul(e, 16777619) >>> 0  (FNV prime)
+
+        最后做 xorshift 混合（murmurhash3 风格的 finalizer）：
+          e ^= e >>> 16
+          e = Math.imul(e, 2246822507) >>> 0
+          e ^= e >>> 13
+          e = Math.imul(e, 3266489909) >>> 0
+          e ^= e >>> 16
+        """
         h = 2166136261
         for ch in text:
             h ^= ord(ch)
@@ -148,10 +163,28 @@ class SentinelTokenGenerator:
 
     @staticmethod
     def _base64_encode(data):
-        raw = json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        return base64.b64encode(raw).decode("ascii")
+        """
+        模拟 SDK 的 E() 函数：JSON.stringify → TextEncoder.encode → btoa
+        """
+        json_str = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+        encoded = json_str.encode("utf-8")
+        return base64.b64encode(encoded).decode("ascii")
 
     def _run_check(self, start_time, seed, difficulty, config, nonce):
+        """
+        单次 PoW 检查（_runCheck 方法逆向还原）
+
+        参数:
+            start_time: 起始时间（秒）
+            seed: PoW 种子字符串
+            difficulty: 难度字符串（hex 前缀阈值）
+            config: 环境配置数组
+            nonce: 当前尝试序号
+
+        返回:
+            成功时返回 base64(config) + "~S"
+            失败时返回 None
+        """
         config[3] = nonce
         config[9] = round((time.time() - start_time) * 1000)
         encoded = self._base64_encode(config)
@@ -161,8 +194,22 @@ class SentinelTokenGenerator:
         return None
 
     def generate_token(self, seed=None, difficulty=None):
-        seed = seed or self.requirements_seed
-        difficulty = difficulty or "0"
+        """
+        生成 sentinel token（完整 PoW 流程）
+
+        参数:
+            seed: PoW 种子（来自服务端的 proofofwork.seed）
+            difficulty: 难度值（来自服务端的 proofofwork.difficulty）
+
+        返回:
+            格式为 "gAAAAAB..." 的 sentinel token 字符串
+        """
+        if seed is None:
+            seed = self.requirements_seed
+            difficulty = difficulty or "0"
+        if difficulty is None or difficulty == "":
+            difficulty = "0"
+        difficulty = str(difficulty)
         start_time = time.time()
         config = self._get_config()
         for nonce in range(self.MAX_ATTEMPTS):
@@ -261,8 +308,7 @@ def _build_sentinel_token_python(
             "c": c_value,
             "id": device_id,
             "flow": flow,
-        },
-        separators=(",", ":"),
+        }
     )
 
 
