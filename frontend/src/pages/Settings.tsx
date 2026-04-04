@@ -1106,7 +1106,7 @@ function ContributionPanel({
     setLoadingStats(true)
     setStatsError('')
     try {
-      const data = await apiFetch('/public/quota-stats', {
+      const data = await apiFetch('/contribution/quota-stats', {
         method: 'POST',
         body: JSON.stringify({
           server_url: contributionServerUrl,
@@ -1150,7 +1150,7 @@ function ContributionPanel({
       onOk: async () => {
         setRedeeming(true)
         try {
-          const data = await apiFetch('/public/redeem', {
+          const data = await apiFetch('/contribution/redeem', {
             method: 'POST',
             body: JSON.stringify({
               server_url: contributionServerUrl,
