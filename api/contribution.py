@@ -35,6 +35,11 @@ class ContributionRedeemRequest(ContributionProxyRequest):
     amount_usd: float = Field(..., gt=0)
 
 
+class ContributionGenerateKeyRequest(BaseModel):
+    server_url: str | None = None
+    name: str | None = None
+
+
 def _resolve_server_url(server_url: str | None) -> str:
     raw = str(server_url or config_store.get("contribution_server_url", "") or "").strip()
     if not raw:
@@ -226,5 +231,26 @@ def redeem(body: ContributionRedeemRequest):
     return {
         "ok": True,
         "endpoint": "/public/redeem",
+        "data": data,
+    }
+
+
+@router.post("/generate-key")
+def generate_key(body: ContributionGenerateKeyRequest):
+    server_url = _resolve_server_url(body.server_url)
+    payload: dict[str, Any] | None = None
+    name = str(body.name or "").strip()
+    if name:
+        payload = {"name": name}
+
+    data = _request_json(
+        "POST",
+        server_url,
+        "/public/generate",
+        payload=payload,
+    )
+    return {
+        "ok": True,
+        "endpoint": "/public/generate",
         "data": data,
     }

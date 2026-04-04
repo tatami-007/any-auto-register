@@ -482,11 +482,17 @@ function pickNumber(value: Record<string, unknown> | null, keys: string[]): numb
   return null
 }
 
-function maskSecretValue(value: string): string {
-  const text = String(value || '').trim()
-  if (!text) return '-'
-  if (text.length <= 8) return `${'*'.repeat(Math.max(0, text.length - 2))}${text.slice(-2)}`
-  return `${text.slice(0, 4)}****${text.slice(-4)}`
+function formatDisplayNumber(value: number | null, digits = 0): string {
+  if (value === null || !Number.isFinite(value)) return '-'
+  return value.toLocaleString('zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+}
+
+function formatDisplayPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '-'
+  return `${value.toFixed(2)}%`
 }
 
 function ConfigField({ field }: { field: FieldConfig }) {
@@ -1067,8 +1073,8 @@ function ContributionPanel({
 }) {
   const [loadingStats, setLoadingStats] = useState(false)
   const [redeeming, setRedeeming] = useState(false)
+  const [creatingKey, setCreatingKey] = useState(false)
   const [redeemAmount, setRedeemAmount] = useState<number>(CONTRIBUTION_REDEEM_OPTIONS[0])
-  const [showKey, setShowKey] = useState(false)
   const [statsResponse, setStatsResponse] = useState<Record<string, unknown> | null>(null)
   const [redeemResponse, setRedeemResponse] = useState<Record<string, unknown> | null>(null)
   const [statsError, setStatsError] = useState('')
@@ -1092,8 +1098,15 @@ function ContributionPanel({
   const settlementAmount =
     pickNumber(keyInfo, ['settlement_amount_usd', 'settlement_amount', 'settled_amount_usd']) ??
     pickNumber(rawData, ['settlement_amount_usd', 'settlement_amount'])
+  const serverQuotaAccountCount = pickNumber(serverInfo, ['quota_account_count'])
+  const serverQuotaTotal = pickNumber(serverInfo, ['quota_total'])
+  const serverQuotaUsed = pickNumber(serverInfo, ['quota_used'])
+  const serverQuotaRemaining = pickNumber(serverInfo, ['quota_remaining'])
+  const serverQuotaUsedPercent = pickNumber(serverInfo, ['quota_used_percent'])
+  const serverQuotaRemainingPercent = pickNumber(serverInfo, ['quota_remaining_percent'])
+  const serverQuotaRemainingAccounts = pickNumber(serverInfo, ['quota_remaining_accounts'])
 
-  const fetchStats = async (silent = false) => {
+  const fetchStats = async (silent = false, keyOverride?: string) => {
     if (!contributionEnabled) {
       if (!silent) message.warning('请先开启贡献功能')
       return
@@ -1110,7 +1123,7 @@ function ContributionPanel({
         method: 'POST',
         body: JSON.stringify({
           server_url: contributionServerUrl,
-          key: contributionKey,
+          key: keyOverride ?? contributionKey,
         }),
       })
       setStatsResponse(asRecord(data))
@@ -1138,7 +1151,7 @@ function ContributionPanel({
       return
     }
     if (!contributionKey) {
-      message.error('请先填写贡献 key')
+      message.error('请先填写 API Key')
       return
     }
 
@@ -1170,6 +1183,36 @@ function ContributionPanel({
     })
   }
 
+  const doGenerateKey = async () => {
+    if (!contributionServerUrl) {
+      message.error('请先填写服务器地址')
+      return
+    }
+    setCreatingKey(true)
+    try {
+      const result = await apiFetch('/contribution/generate-key', {
+        method: 'POST',
+        body: JSON.stringify({
+          server_url: contributionServerUrl,
+        }),
+      })
+      const payload = asRecord(asRecord(result)?.data)
+      const generated = pickString(payload, ['key', 'api_key', 'public_key'])
+      if (!generated) {
+        throw new Error('服务端未返回可用 key')
+      }
+      form.setFieldValue('contribution_key', generated)
+      message.success('已新建并填充 API Key，请点击保存配置')
+      if (contributionEnabled) {
+        await fetchStats(true, generated)
+      }
+    } catch (e: any) {
+      message.error(String(e?.message || '请求新建 key 失败'))
+    } finally {
+      setCreatingKey(false)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Card title="配置">
@@ -1183,8 +1226,21 @@ function ContributionPanel({
         >
           <Input placeholder="http://new.xem8k5.top:7317/" />
         </Form.Item>
-        <Form.Item name="contribution_key" label="指定 key（可选）">
-          <Input.Password placeholder="留空则仅保存地址与开关" />
+        <Form.Item name="contribution_key" label="API Key">
+          <Input
+            placeholder="留空可点击右侧按钮自动创建"
+            addonAfter={(
+              <Button
+                type="link"
+                size="small"
+                loading={creatingKey}
+                onClick={() => { void doGenerateKey() }}
+                style={{ paddingInline: 0 }}
+              >
+                没有key?请求新建
+              </Button>
+            )}
+          />
         </Form.Item>
         <Button type="primary" icon={<SaveOutlined />} onClick={onSave} loading={saving} block>
           {saved ? '已保存 ✓' : '保存配置'}
@@ -1206,19 +1262,22 @@ function ContributionPanel({
             {statsError ? <Alert type="error" showIcon message={statsError} /> : null}
             <div>
               <Typography.Text strong>服务器信息</Typography.Text>
-              <pre style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>
-                {formatResultText(serverInfo || {})}
-              </pre>
+              <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+                <Tag color="blue">账号数: {formatDisplayNumber(serverQuotaAccountCount)}</Tag>
+                <Tag color="geekblue">总额度: {formatDisplayNumber(serverQuotaTotal)}</Tag>
+                <Tag color="volcano">已用额度: {formatDisplayNumber(serverQuotaUsed)}</Tag>
+                <Tag color="green">剩余额度: {formatDisplayNumber(serverQuotaRemaining)}</Tag>
+                <Tag color="orange">已用占比: {formatDisplayPercent(serverQuotaUsedPercent)}</Tag>
+                <Tag color="cyan">剩余占比: {formatDisplayPercent(serverQuotaRemainingPercent)}</Tag>
+                <Tag color="purple">折算账号数: {formatDisplayNumber(serverQuotaRemainingAccounts, 2)}</Tag>
+              </div>
             </div>
             <div>
-              <Typography.Text strong>key</Typography.Text>
+              <Typography.Text strong>API Key</Typography.Text>
               <Space style={{ marginLeft: 8 }}>
                 <Typography.Text copyable={keyFromStats ? { text: keyFromStats } : undefined}>
-                  {showKey ? (keyFromStats || '-') : maskSecretValue(keyFromStats)}
+                  {keyFromStats || '-'}
                 </Typography.Text>
-                <Button size="small" onClick={() => setShowKey((prev) => !prev)}>
-                  {showKey ? '隐藏' : '显示'}
-                </Button>
               </Space>
             </div>
             <div>
