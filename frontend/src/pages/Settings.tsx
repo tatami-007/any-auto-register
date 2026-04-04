@@ -1222,7 +1222,13 @@ function ContributionPanel({
           banner
           style={{ marginBottom: 12 }}
           message="开启贡献模式后，注册成功账号将只上传到贡献服务器"
-          description="CPA / CodexProxy / Sub2API 自动上传会被停用，避免重复上报。"
+          description={(
+            <>
+              <div>CPA / CodexProxy / Sub2API 自动上传会被停用，避免重复上报。</div>
+              <div>目前该功能在xem中转站测试中 有兴趣可以进群了解</div>
+              <div>中转站https://ai.xem8k5.top/ 群号634758974</div>
+            </>
+          )}
         />
         <Form.Item name="contribution_enabled" label="是否开启" valuePropName="checked">
           <Switch checkedChildren="开启" unCheckedChildren="关闭" />
