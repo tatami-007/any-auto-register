@@ -1216,6 +1216,14 @@ function ContributionPanel({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Card title="配置">
+        <Alert
+          type="warning"
+          showIcon
+          banner
+          style={{ marginBottom: 12 }}
+          message="开启贡献模式后，注册成功账号将只上传到贡献服务器"
+          description="CPA / CodexProxy / Sub2API 自动上传会被停用，避免重复上报。"
+        />
         <Form.Item name="contribution_enabled" label="是否开启" valuePropName="checked">
           <Switch checkedChildren="开启" unCheckedChildren="关闭" />
         </Form.Item>
